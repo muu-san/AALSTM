@@ -238,4 +238,4 @@ T: 15, Units: 32, L2_Reg: 1, learning_rate: 0.001, Test Accuracy: 0.507914900779
 T: 15, Units: 32, L2_Reg: 1, learning_rate: 0.01, Test Accuracy: 0.5079131722450256, Test MCC: 0.0048402645625174046
 T: 15, Units: 32, L2_Reg: 10, learning_rate: 0.001, Test Accuracy: 0.5080252289772034, Test MCC: 0.004183892626315355
 T: 15, Units: 32, L2_Reg: 10, learning_rate: 0.01, Test Accuracy: 0.5078361630439758, Test MCC: 0.0018006759928539395
-Best Parameters: {'T': 2, 'units': 8, 'l2_reg': 0.1}, Best Test Accuracy: 0.5275425314903259, Best Test MCC: 0.03447599336504936
+Best Parameters: {'T': 2, 'units': 8, 'l2_reg': 0.1, 'learning_rate': 0.001}, Best Test Accuracy: 0.5275425314903259, Best Test MCC: 0.03447599336504936
