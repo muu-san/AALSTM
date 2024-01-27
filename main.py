@@ -8,7 +8,6 @@ import os
 import glob
 from itertools import product
 
-import tensorflow_addons as tfa
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.python.keras.models import load_model
@@ -24,7 +23,6 @@ from tensorflow.keras.metrics import MeanSquaredError
 
 from sklearn.metrics import mean_squared_error,mean_absolute_error, matthews_corrcoef, accuracy_score
 from sklearn.preprocessing import robust_scale, OneHotEncoder
-from sklearn.metrics import matthews_corrcoef
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
@@ -49,7 +47,7 @@ def select_dataset(dataset):
         validation=datetime.datetime(year=2015, month=1, day=3)
         testing=datetime.datetime(year=2016, month=1, day=4)
         end=datetime.datetime(year=2017, month=1, day=1)
-    return start, train, validation, testing, end
+    return start, validation, testing, end
 
 def hinge_acc(y_true, y_pred):
     y_pred = (tf.sign(y_pred) + 1) / 2
@@ -61,10 +59,10 @@ def hinge_acc(y_true, y_pred):
 class MCC(tf.keras.metrics.Metric):
     def __init__(self, name='mcc', **kwargs):
         super(MCC, self).__init__(name=name, **kwargs)
-        self.true_positives = self.add_weight(initializer='zeros')
-        self.false_positives = self.add_weight(initializer='zeros')
-        self.true_negatives = self.add_weight(initializer='zeros')
-        self.false_negatives = self.add_weight(initializer='zeros')
+        self.true_positives = self.add_weight(name='tp', initializer='zeros')
+        self.false_positives = self.add_weight(name='fp', initializer='zeros')
+        self.true_negatives = self.add_weight(name='tn', initializer='zeros')
+        self.false_negatives = self.add_weight(name='fn', initializer='zeros')
 
     def update_state(self, y_true, y_pred, sample_weight=None):
         y_pred = tf.round(y_pred)
@@ -206,7 +204,7 @@ class AdvALSTM(tf.keras.models.Model):
 
         if self.attention:
             self.model_latent_rep = tf.keras.models.Sequential([
-                SelfAttention(units),
+                #SelfAttention(units),
                 #Conv1D(filters=64, kernel_size=2, activation='relu'),
                 #MaxPooling1D(pool_size=2),
                 tf.keras.layers.Dense(units, activation = "tanh", kernel_initializer = keras.initializers.glorot_uniform),
@@ -215,7 +213,7 @@ class AdvALSTM(tf.keras.models.Model):
 
             ])
             self.model_prediction = tf.keras.models.Sequential([
-                #TemporalAttention(units),
+                TemporalAttention(units),
                 CustomDense(units, hinge)
                 ])
         else:
@@ -231,7 +229,7 @@ class AdvALSTM(tf.keras.models.Model):
         self.compile(
             loss = "hinge" if hinge else "binary_crossentropy",
             optimizer = tf.keras.optimizers.Adam(learning_rate),
-            metrics = [hinge_acc if hinge else "acc", tfa.metrics.MatthewsCorrelationCoefficient(num_classes=2)]
+            metrics = [hinge_acc if hinge else "acc", MCC()]
         )
 
     def call(self, x):
@@ -278,7 +276,6 @@ def train_model(model, X_train, y_train, X_val, y_val, X_test, y_test, epochs, b
     best_test_mcc = 0
 
     for epoch in range(epochs):
-        # トレーニングデータをシャッフル
         indices = np.arange(X_train.shape[0])
         np.random.shuffle(indices)
         X_train_shuffled = X_train[indices]
@@ -287,7 +284,6 @@ def train_model(model, X_train, y_train, X_val, y_val, X_test, y_test, epochs, b
         num_samples = X_train.shape[0]
         num_batches = int(np.ceil(num_samples / batch_size))
 
-        # トレーニング
         for batch in range(num_batches):
             batch_start = batch * batch_size
             batch_end = min(batch_start + batch_size, num_samples)
@@ -295,10 +291,8 @@ def train_model(model, X_train, y_train, X_val, y_val, X_test, y_test, epochs, b
             y_batch = y_train_shuffled[batch_start:batch_end]
             model.train_on_batch(X_batch, y_batch)
 
-        # バリデーション
         model.evaluate(X_val, y_val, verbose=0)
 
-        # テスト
         test_metrics = model.evaluate(X_test, y_test, verbose=0)
         test_acc = test_metrics[1]
         test_mcc = test_metrics[2]
@@ -306,14 +300,13 @@ def train_model(model, X_train, y_train, X_val, y_val, X_test, y_test, epochs, b
         #print(f'Epoch {epoch + 1}/{epochs}')
         #print(f'Test Accuracy: {test_acc}, Test MCC: {test_mcc}')
 
-        # 最良の性能を記録
         if test_acc > best_test_acc or test_mcc > best_test_mcc:
             best_test_acc = test_acc
             best_test_mcc = test_mcc
 
     return best_test_acc, best_test_mcc
 
-def generate_sequences(df, features_columns, T):
+def generate_sequences_atten(df, features_columns, T):
     X = []
     y = []
     for i in range(T, len(df)):
@@ -321,20 +314,26 @@ def generate_sequences(df, features_columns, T):
         y.append(df["Up"].iloc[i])
     return np.array(X), np.array(y)
 
+def generate_sequences_lstm(df, features_columns, T):
+    df_list = []
+    X_stock_array = np.array(df[features_columns])
+    y_stock_array = np.array(df["Up"])
+    sequences_indexes = [np.arange(i, T + i, 1) for i in range(len(df) - T)]
+    _X = X_stock_array[sequences_indexes]
+    _y = y_stock_array[sequences_indexes][:, -1]
+    return _X, _y
+
 def add_weekday_encoding(df):
-    # 日付から曜日を取得（月曜=0, 日曜=6）
     df['weekday'] = df.index.dayofweek
-    # ワンホットエンコーディングを適用
     encoder = OneHotEncoder(sparse_output=False)
     weekday_encoded = encoder.fit_transform(df[['weekday']].values)
 
-    # エンコーディングされた曜日をデータフレームに追加
     weekday_columns = [f'weekday_{i}' for i in range(weekday_encoded.shape[1])]
     df_weekday = pd.DataFrame(weekday_encoded, index=df.index, columns=weekday_columns)
     df.drop('weekday', axis=1, inplace=True)
     return pd.concat([df, df_weekday], axis=1)
 
-def load_data(dataset, T):
+def load_data(dataset, attention, T):
   X_train_all=None
   y_train_all=None
   X_val_all=None
@@ -343,10 +342,10 @@ def load_data(dataset, T):
   y_test_all=None
 
   if dataset=="KDD17" or "ACL18":
-    raw_data_path = f"/content/drive/MyDrive/卒研/{dataset}/ourpped/*.csv"
+    raw_data_path = f"/home/20x3051_sasamura/code/{dataset}/ourpped/*.csv"
     raw_data_pathes = glob.glob(raw_data_path)
 
-  trading_dates = pd.read_csv("/content/drive/MyDrive/卒研/{dataset}/trading_dates.csv", header=None)
+  trading_dates = pd.read_csv(f"/home/20x3051_sasamura/code/{dataset}/trading_dates.csv", header=None)
   trading_dates.columns = ['Date']
   for path in raw_data_pathes:
       #print(path)
@@ -368,34 +367,42 @@ def load_data(dataset, T):
       df_test = df[(testing <= df.index) & (df.index < end)]
 
 
-      X_train, y_train = generate_sequences(df_train, ['High', 'Low', 'Open', 'Close_', 'Adj Close_', '5-day', '10-day', '15-day', '20-day', '25-day', '30-day'] + [f'weekday_{i}' for i in range(5)], T=T)
+      if attention:
+          X_train, y_train = generate_sequences_atten(df_train, ['High', 'Low', 'Open', 'Close_', 'Adj Close_', '5-day', '10-day', '15-day', '20-day', '25-day', '30-day'] + [f'weekday_{i}' for i in range(5)], T=T)
+          X_val,   y_val   = generate_sequences_atten(df_val,   ['High', 'Low', 'Open', 'Close_', 'Adj Close_', '5-day', '10-day', '15-day', '20-day', '25-day', '30-day'] + [f'weekday_{i}' for i in range(5)], T=T)
+          X_test,  y_test  = generate_sequences_atten(df_test,  ['High', 'Low', 'Open', 'Close_', 'Adj Close_', '5-day', '10-day', '15-day', '20-day', '25-day', '30-day'] + [f'weekday_{i}' for i in range(5)], T=T)
+      else:
+          X_train, y_train = generate_sequences_lstm(df_train, ['High', 'Low', 'Open', 'Close_', 'Adj Close_', '5-day', '10-day', '15-day', '20-day', '25-day', '30-day'] + [f'weekday_{i}' for i in range(5)], T=T)
+          X_val,   y_val   = generate_sequences_lstm(df_val,   ['High', 'Low', 'Open', 'Close_', 'Adj Close_', '5-day', '10-day', '15-day', '20-day', '25-day', '30-day'] + [f'weekday_{i}' for i in range(5)], T=T)
+          X_test,  y_test  = generate_sequences_lstm(df_test,  ['High', 'Low', 'Open', 'Close_', 'Adj Close_', '5-day', '10-day', '15-day', '20-day', '25-day', '30-day'] + [f'weekday_{i}' for i in range(5)], T=T)
+
       if X_train_all is None: X_train_all = X_train
       else : X_train_all = np.concatenate([X_train_all, X_train], axis = 0)
       if y_train_all is None: y_train_all = y_train
       else : y_train_all = np.concatenate([y_train_all, y_train], axis = 0)
 
-      X_val,   y_val   = generate_sequences(df_val,   ['High', 'Low', 'Open', 'Close_', 'Adj Close_', '5-day', '10-day', '15-day', '20-day', '25-day', '30-day'] + [f'weekday_{i}' for i in range(5)], T=T)
       if X_val_all is None: X_val_all = X_val
       else : X_val_all = np.concatenate([X_val_all, X_val], axis = 0)
       if y_val_all is None: y_val_all = y_val
       else : y_val_all = np.concatenate([y_val_all, y_val], axis = 0)
 
-      X_test,  y_test  = generate_sequences(df_test,  ['High', 'Low', 'Open', 'Close_', 'Adj Close_', '5-day', '10-day', '15-day', '20-day', '25-day', '30-day'] + [f'weekday_{i}' for i in range(5)], T=T)
       if X_test_all is None: X_test_all = X_test
       else : X_test_all = np.concatenate([X_test_all, X_test], axis = 0)
       if y_test_all is None: y_test_all = y_test
       else : y_test_all = np.concatenate([y_test_all, y_test], axis = 0)
-
+  #print("training data:", len(X_train_all))
+  #print("validation data:", len(X_val_all))
+  #print("test data:", len(X_test_all))
   return X_train_all, X_val_all, X_test_all, y_train_all, y_val_all, y_test_all
 
 
 #stocknet-dataset, kdd17
-dataset="stocknet-dataset"
+dataset="kdd17"
 T_values = [2, 3, 4, 5, 10, 15]
 units_values = [4, 8, 16, 32]
 l2_reg_values = [0.001, 0.01, 0.1, 1, 10]
 learning_rate= [0.001, 0.01]
-start, train, validation, testing, end = select_dataset(dataset)
+start, validation, testing, end = select_dataset(dataset)
 
 param_combinations = list(product(T_values, units_values, l2_reg_values, learning_rate))#
 
@@ -404,14 +411,14 @@ best_test_acc = 0
 best_test_mcc = 0
 
 for T, units, l2_reg, learning_rate in param_combinations:
-    X_train_all, X_val_all, X_test_all, y_train_all, y_val_all, y_test_all = load_data(dataset, T=T)
+    X_train_all, X_val_all, X_test_all, y_train_all, y_val_all, y_test_all = load_data(dataset, attention, T=T)
 
     tf.random.set_seed(123456)
     model = AdvALSTM(
         units=units,
         learning_rate=learning_rate,
         l2_reg=l2_reg,
-        attention=True,
+        attention=False,
         hinge=True,
         dropout=0.0,
         adversarial_training=False,
@@ -432,8 +439,7 @@ for T, units, l2_reg, learning_rate in param_combinations:
 
     print(f'T: {T}, Units: {units}, L2_Reg: {l2_reg}, Learning_Rate: {learning_rate}, Test Accuracy: {test_acc}, Test MCC: {test_mcc}')
 
-    # 最適なパラメータの更新
-    if test_acc > best_test_acc or (test_acc == best_test_acc and test_mcc > best_test_mcc):
+    if test_acc > best_test_acc and (test_acc == best_test_acc and test_mcc > best_test_mcc):
         best_test_acc = test_acc
         best_test_mcc = test_mcc
         best_params = {'T': T, 'units': units, 'l2_reg': l2_reg, 'Learning_Rate': learning_rate}
