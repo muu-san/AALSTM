@@ -204,9 +204,9 @@ class AdvALSTM(tf.keras.models.Model):
 
         if self.attention:
             self.model_latent_rep = tf.keras.models.Sequential([
-                #SelfAttention(units),
                 #Conv1D(filters=64, kernel_size=2, activation='relu'),
                 #MaxPooling1D(pool_size=2),
+                SelfAttention(units),                
                 tf.keras.layers.Dense(units, activation = "tanh", kernel_initializer = keras.initializers.glorot_uniform),
                 tf.keras.layers.Dropout(dropout),
                 tf.keras.layers.LSTM(units, return_sequences = True, dropout = dropout),
